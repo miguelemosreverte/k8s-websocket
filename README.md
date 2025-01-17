@@ -4,7 +4,7 @@ Pulumi | Kubernetes | Websocket
 ### HOW TO RUN LOCAL
 `minikube start --driver=docker`
 
-`sh script.deploy.local.sh`
+`sh script.deploy.local.pulumi.sh`
 
 ```
 sh script.deploy.local.sh
@@ -70,7 +70,7 @@ http://127.0.0.1:57855
 <img width="2012" alt="Screenshot 2025-01-18 at 00 21 33" src="https://github.com/user-attachments/assets/aac9b152-f4e5-4edc-84e0-1395e2c23938" />
 
 
-`sh script.teardown.local.sh`
+`sh script.teardown.local.pulumi.sh`
 
 ```
 sh script.teardown.local.sh
