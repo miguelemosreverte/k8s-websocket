@@ -1,18 +1,16 @@
 {
-  "name": "pulumi-k8s-websocket",
-  "version": "1.0.0",
-  "description": "Pulumi | Kubernetes | Websocket",
-  "main": "server.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "express": "^4.21.2",
-    "serve-favicon": "^2.5.0",
-    "ws": "^8.18.0"
-  }
+    "name": "pulumi-k8s-websocket",
+    "main": "index.ts",
+    "devDependencies": {
+        "@types/node": "^18",
+        "typescript": "^5.0.0"
+    },
+    "dependencies": {
+        "@pulumi/docker": "^4.6.1",
+        "@pulumi/kubernetes": "^4.21.0",
+        "@pulumi/pulumi": "^3.146.0",
+        "express": "^4.21.2",
+        "serve-favicon": "^2.5.0",
+        "ws": "^8.18.0"
+    }
 }

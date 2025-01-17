@@ -1,0 +1,4 @@
+encryptionsalt: v1:KeKLVR+TAgQ=:v1:UKJZ/fHve023C4N1:HdU+ru09yoto+bpSAkfNcyYnZ+4r1Q==
+config:
+  kubernetes:context: minikube
+  pulumi-k8s-websocket:environment: minikube
