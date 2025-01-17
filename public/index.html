@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en" class="h-full bg-gradient-to-b from-blue-50 to-gray-100">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Simple Chat</title>
+
+        <!-- Tailwind CSS via CDN -->
+        <script src="https://cdn.tailwindcss.com"></script>
+
+        <!-- Optional: Font Awesome for icons (used for the header icon) -->
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+            integrity="sha512-fL8B1cQ47OjzRqzB7myZcx8+udb8i1jx2jvNLmb0Z3uVgdrXvWC6KYo2DCihaDMTkPmlKzbnF6Z1HDk98zjcwQ=="
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"
+        />
+
+        <style>
+            /* Fade-in animation for messages */
+            @keyframes fadeIn {
+                0% {
+                    opacity: 0;
+                    transform: translateY(5px);
+                }
+                100% {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            .fade-in {
+                animation: fadeIn 0.2s ease forwards;
+            }
+
+            /* Bubble arrow for the right side (blue) */
+            .bubble-right {
+                position: relative;
+            }
+            .bubble-right::after {
+                content: "";
+                position: absolute;
+                top: 10px;
+                right: -6px;
+                width: 0;
+                height: 0;
+                border-top: 6px solid transparent;
+                border-bottom: 6px solid transparent;
+                border-left: 6px solid #2563eb; /* Tailwind's "blue-600" */
+            }
+
+            /* Bubble arrow for the left side (gray) */
+            .bubble-left {
+                position: relative;
+            }
+            .bubble-left::after {
+                content: "";
+                position: absolute;
+                top: 10px;
+                left: -6px;
+                width: 0;
+                height: 0;
+                border-top: 6px solid transparent;
+                border-bottom: 6px solid transparent;
+                border-right: 6px solid #e5e7eb; /* Tailwind's "gray-200" */
+            }
+        </style>
+    </head>
+
+    <body class="h-full font-sans">
+        <!-- Main container -->
+        <div class="h-full w-full flex items-center justify-center px-4">
+            <!-- Outer card (chat box) -->
+            <div
+                class="w-full max-w-2xl bg-white shadow-lg rounded-lg flex flex-col overflow-hidden"
+            >
+                <!-- Header -->
+                <div
+                    class="bg-blue-600 text-white py-4 px-6 flex items-center justify-between"
+                >
+                    <div class="flex items-center space-x-3">
+                        <i class="fas fa-comments text-xl"></i>
+                        <div>
+                            <h1 class="text-xl font-bold leading-5">
+                                Simple Chat
+                            </h1>
+                            <p class="text-sm text-blue-100">
+                                Real-time conversation
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat messages -->
+                <ul
+                    id="messages"
+                    class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50"
+                    style="max-height: 70vh"
+                ></ul>
+
+                <!-- Input section -->
+                <div class="border-t border-gray-200 flex">
+                    <input
+                        id="messageInput"
+                        type="text"
+                        placeholder="Type a message..."
+                        class="flex-1 px-4 py-3 focus:outline-none text-gray-700"
+                    />
+                    <button
+                        id="sendButton"
+                        class="bg-blue-600 text-white px-6 py-3 hover:bg-blue-700 active:bg-blue-800 focus:outline-none"
+                    >
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            // Setup WebSocket connection
+            const socket = new WebSocket("ws://" + window.location.host);
+
+            // Grab DOM elements
+            const messagesEl = document.getElementById("messages");
+            const messageInput = document.getElementById("messageInput");
+            const sendButton = document.getElementById("sendButton");
+
+            /**
+             * 1. Listen for incoming WebSocket messages
+             *    - If event.data is a string, use it directly
+             *    - If event.data is a Blob, convert to text first
+             */
+            socket.onmessage = (event) => {
+                if (typeof event.data === "string") {
+                    console.log("Received text from server:", event.data);
+                    addMessage(event.data, false);
+                } else if (event.data instanceof Blob) {
+                    console.log("Received Blob from server:", event.data);
+                    const reader = new FileReader();
+                    reader.onload = function () {
+                        // 'reader.result' will contain the text from the blob
+                        console.log("Converted Blob to text:", reader.result);
+                        addMessage(reader.result, false);
+                    };
+                    reader.readAsText(event.data);
+                }
+            };
+
+            /**
+             * 2. Send a message to the server
+             */
+            function sendMessage() {
+                const text = messageInput.value.trim();
+                if (!text) return;
+
+                // Log to client console
+                console.log("Sending to server:", text);
+
+                // Send raw text to server
+                socket.send(text);
+
+                // Display locally as my own message
+                addMessage(text, true);
+
+                // Clear the input
+                messageInput.value = "";
+            }
+
+            /**
+             * 3. Add a new message bubble to the chat
+             */
+            function addMessage(text, isOwn) {
+                const li = document.createElement("li");
+
+                // Make this <li> a block element so it stacks vertically
+                // and apply spacing/styling classes
+                li.classList.add(
+                    "block",
+                    "fade-in",
+                    "px-4",
+                    "py-2",
+                    "rounded-lg",
+                    "shadow-sm",
+                    "max-w-sm",
+                    "break-words",
+                    "relative",
+                );
+
+                // Distinguish your own messages vs. others
+                if (isOwn) {
+                    li.classList.add(
+                        "bg-blue-600",
+                        "text-white",
+                        "self-end",
+                        "ml-auto",
+                        "bubble-right",
+                    );
+                } else {
+                    li.classList.add(
+                        "bg-gray-200",
+                        "text-gray-700",
+                        "self-start",
+                        "mr-auto",
+                        "bubble-left",
+                    );
+                }
+
+                li.textContent = text;
+                messagesEl.appendChild(li);
+
+                // Scroll to bottom to see the latest
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            /**
+             * 4. Button & Enter key event listeners
+             */
+            sendButton.addEventListener("click", sendMessage);
+
+            messageInput.addEventListener("keypress", (e) => {
+                if (e.key === "Enter") {
+                    sendMessage();
+                }
+            });
+        </script>
+    </body>
+</html>
