@@ -99,6 +99,10 @@ users:
 // Name and tag for your container image
 const imageName = "gcr.io/development_test_02/chat-app:v1";
 
+// Retrieve the registry password
+const registry = gcp.container.getRegistryImage();
+const registryPassword = registry.then((r) => r.password);
+
 // Build/push the Docker image to GCR
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
@@ -109,7 +113,7 @@ const chatAppImage = new docker.Image("chat-app-image", {
   registry: {
     server: "gcr.io",
     username: "_json_key",
-    password: pulumi.secret(gcp.container.getRegistryImage().password),
+    password: pulumi.secret(registryPassword),
   },
 });
 
