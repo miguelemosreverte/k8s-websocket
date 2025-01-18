@@ -7,28 +7,27 @@ import * as k8s from "@pulumi/kubernetes";
 const projectName = "development_test_02";
 const location = "us-central1";
 
-// Environment variable to switch between GKE and Minikube
+// Switch GKE vs. Minikube
 const useGke = pulumi.getStack() === "gke";
 
-// Create a GKE cluster if useGke is true
-let kubeconfig: pulumi.Output<string>;
+// If needed: create GKE cluster
+let kubeconfig: pulumi.Output<string> | undefined;
 let cluster: gcp.container.Cluster | undefined;
-
 if (useGke) {
   cluster = new gcp.container.Cluster("gke-cluster", {
     initialNodeCount: 1,
-    location: location,
+    location,
     minMasterVersion: "1.21",
     nodeVersion: "1.21",
     nodeConfig: {
       machineType: "e2-medium",
       oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
     },
-    network: "default",
     project: projectName,
+    network: "default",
   });
 
-  // Get the cluster credentials
+  // Build kubeconfig
   kubeconfig = pulumi
     .all([cluster.name, cluster.endpoint, cluster.masterAuth])
     .apply(([name, endpoint, auth]) => {
@@ -60,7 +59,7 @@ users:
 `;
     });
 } else {
-  // Kubeconfig for Minikube
+  // For Minikube
   kubeconfig = pulumi.output(`
 apiVersion: v1
 clusters:
@@ -83,37 +82,29 @@ users:
 `);
 }
 
-// Build and push Docker image
+// Build & push Docker image to GCR
 const imageName = "gcr.io/development_test_02/chat-app:v1";
+const dockerToken = gcp.getAccessToken(); // uses service-account JSON from pulumi config
 
-// -- FIX: Ensure we have a defined string for the token --
-const token = gcp.config.accessToken;
-if (!token) {
-  throw new Error(
-    "No GCP access token found. Please set 'gcp:accessToken' in Pulumi config, or authenticate via Service Account.",
-  );
-}
-
-// Pass the token to Docker registry with pulumi.secret
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
     context: ".",
-    platform: "linux/amd64", // Often needed on Apple Silicon
+    platform: "linux/amd64",
   },
-  imageName: imageName,
-  registry: {
+  imageName,
+  registry: pulumi.output(dockerToken).apply((token) => ({
     server: "gcr.io",
     username: "oauth2accesstoken",
-    password: pulumi.secret(token),
-  },
+    password: pulumi.secret(token.token), // mark secret
+  })),
 });
 
-// Create a Kubernetes provider using the kubeconfig
+// Create a K8s provider
 const k8sProvider = new k8s.Provider("k8sProvider", {
   kubeconfig: kubeconfig,
 });
 
-// Define K8s Deployment with the Pulumi-built image
+// Deploy a K8s Deployment with the newly built image
 const appLabels = { app: "chat-app" };
 const deployment = new k8s.apps.v1.Deployment(
   "chat-app-deployment",
@@ -139,7 +130,7 @@ const deployment = new k8s.apps.v1.Deployment(
   { provider: k8sProvider },
 );
 
-// Define K8s Service
+// K8s Service (LoadBalancer)
 const service = new k8s.core.v1.Service(
   "chat-app-service",
   {
@@ -153,17 +144,14 @@ const service = new k8s.core.v1.Service(
   { provider: k8sProvider },
 );
 
-// Export the cluster info
+// Exports
 export const clusterName = useGke ? cluster!.name : pulumi.output("minikube");
 export const clusterEndpoint = useGke
   ? cluster!.endpoint
   : pulumi.output("https://$(minikube ip):8443");
 
-// Export deployment/service metadata
 export const deploymentName = deployment.metadata.name;
 export const serviceName = service.metadata.name;
-
-// Safely export the LoadBalancer IP
 export const serviceIP = service.status.loadBalancer.ingress.apply(
-  (ingressArray) => ingressArray[0]?.ip ?? "Pending IP",
+  (ingress) => ingress[0]?.ip ?? "Pending IP",
 );
