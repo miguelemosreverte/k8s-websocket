@@ -143,9 +143,9 @@ const service = new k8s.core.v1.Service(
 );
 
 // Export the URLs
-export const clusterName = useGke ? cluster.name : pulumi.output("minikube");
+export const clusterName = useGke ? cluster!.name : pulumi.output("minikube");
 export const clusterEndpoint = useGke
-  ? cluster.endpoint
+  ? cluster!.endpoint
   : pulumi.output("https://$(minikube ip):8443");
 export const deploymentName = deployment.metadata.name;
 export const serviceName = service.metadata.name;
