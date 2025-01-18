@@ -96,9 +96,6 @@ users:
 // 3) BUILD & PUSH DOCKER IMAGE TO GCR
 // ---------------------------------------------------------------------
 
-// Grab a short-lived token from your existing GCP credentials
-const dockerToken = gcp.getAccessToken();
-
 // Name and tag for your container image
 const imageName = "gcr.io/development_test_02/chat-app:v1";
 
@@ -109,13 +106,11 @@ const chatAppImage = new docker.Image("chat-app-image", {
     platform: "linux/amd64", // helpful on Apple Silicon
   },
   imageName,
-  registry: dockerToken.apply(
-    (token: gcp.types.output.GetAccessTokenResult) => ({
-      server: "gcr.io",
-      username: "oauth2accesstoken",
-      password: pulumi.secret(token.token), // store the token as a secret
-    }),
-  ),
+  registry: {
+    server: "gcr.io",
+    username: "_json_key",
+    password: pulumi.secret(gcp.container.getRegistryImage().password),
+  },
 });
 
 // ---------------------------------------------------------------------
