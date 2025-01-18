@@ -59,6 +59,14 @@ if ! command_exists docker; then
     systemctl start docker
     systemctl enable docker
     usermod -aG docker $SUDO_USER
+    # Create docker group if it doesn't exist
+    groupadd -f docker
+    # Add user to docker group
+    usermod -aG docker $SUDO_USER
+    # Set proper permissions on docker.sock
+    chmod 666 /var/run/docker.sock
+    # Restart Docker daemon
+    systemctl restart docker
 fi
 
 # Install Pulumi if it's not in the user's path
