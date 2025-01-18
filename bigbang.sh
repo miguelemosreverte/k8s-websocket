@@ -73,12 +73,34 @@ fi
 
 # Always ensure Docker is properly configured
 log "Setting up Docker permissions..."
-systemctl stop docker || true
+# Stop all Docker-related services
+systemctl stop docker.socket || true
+systemctl stop docker.service || true
+
+# Create docker group and add user
 groupadd -f docker
 usermod -aG docker $SUDO_USER
-rm -f /var/run/docker.sock
-systemctl start docker
-sleep 5  # Give Docker time to create the socket
+
+# Start Docker properly
+systemctl start docker.socket
+systemctl start docker.service
+
+# Give Docker time to initialize
+log "Waiting for Docker to initialize..."
+for i in {1..30}; do
+    if [ -S /var/run/docker.sock ]; then
+        break
+    fi
+    sleep 1
+done
+
+# Check if socket exists
+if [ ! -S /var/run/docker.sock ]; then
+    log "ERROR: Docker socket failed to initialize"
+    exit 1
+fi
+
+# Set permissions
 chmod 666 /var/run/docker.sock
 chown root:docker /var/run/docker.sock
 
