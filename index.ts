@@ -12,8 +12,9 @@ const useGke = pulumi.getStack() === "gke";
 
 // Create a GKE cluster if useGke is true
 let kubeconfig: pulumi.Output<string>;
+let cluster: gcp.container.Cluster | undefined;
 if (useGke) {
-  const cluster = new gcp.container.Cluster("gke-cluster", {
+  cluster = new gcp.container.Cluster("gke-cluster", {
     initialNodeCount: 1,
     location: location,
     minMasterVersion: "1.21",
