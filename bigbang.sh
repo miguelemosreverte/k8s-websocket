@@ -15,33 +15,7 @@ command_exists() {
 
 # Detect OS
 OS="$(uname)"
-if [ "$OS" = "Darwin" ]; then
-    # Check if Homebrew is installed
-    if ! command_exists brew; then
-        log "Installing Homebrew..."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    fi
-
-    # Install dependencies using Homebrew
-    log "Installing dependencies using Homebrew..."
-
-    if ! command_exists git; then
-        log "Installing Git..."
-        brew install git
-    fi
-
-    if ! command_exists node; then
-        log "Installing Node.js and npm..."
-        brew install node
-    fi
-
-    if ! command_exists docker; then
-        log "Installing Docker..."
-        brew install --cask docker
-        log "Please open Docker Desktop to complete the installation"
-    fi
-
-elif [ "$OS" = "Linux" ]; then
+if [ "$OS" = "Linux" ]; then
     # Check if script is run with sudo on Linux
     if [ "$EUID" -ne 0 ]; then
         log "Please run as root (use sudo)"
@@ -84,62 +58,59 @@ elif [ "$OS" = "Linux" ]; then
         systemctl enable docker
         usermod -aG docker $SUDO_USER
     fi
+fi
+
+# Get the actual home directory of the sudo user
+if [ -n "$SUDO_USER" ]; then
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
 else
-    log "Unsupported operating system: $OS"
-    exit 1
+    USER_HOME="$HOME"
 fi
 
 # Install Pulumi if not present
 if ! command_exists pulumi; then
     log "Installing Pulumi..."
-    curl -fsSL https://get.pulumi.com | sh
+    su - $SUDO_USER -c 'curl -fsSL https://get.pulumi.com | sh'
 
-    # Add Pulumi to PATH
-    if [ "$OS" = "Darwin" ]; then
-        echo 'export PATH=$PATH:$HOME/.pulumi/bin' >> ~/.zshrc
-        source ~/.zshrc
-    else
-        echo 'export PATH=$PATH:$HOME/.pulumi/bin' >> /home/$SUDO_USER/.bashrc
-    fi
+    # Add Pulumi to PATH in the user's bashrc
+    echo 'export PATH=$PATH:$HOME/.pulumi/bin' >> $USER_HOME/.bashrc
+
+    # Also add it to the current session
+    export PATH=$PATH:$USER_HOME/.pulumi/bin
 fi
 
 # Clone the repository if it doesn't exist
-REPO_DIR="$HOME/pulumi-k8s-websocket"
+REPO_DIR="$USER_HOME/pulumi-k8s-websocket"
 if [ ! -d "$REPO_DIR" ]; then
     log "Cloning repository..."
-    git clone https://github.com/miguelemosreverte/pulumi-k8s-websocket "$REPO_DIR"
+    su - $SUDO_USER -c "git clone https://github.com/miguelemosreverte/pulumi-k8s-websocket $REPO_DIR"
 else
     log "Repository already exists, pulling latest changes..."
-    cd "$REPO_DIR" && git pull
+    su - $SUDO_USER -c "cd $REPO_DIR && git pull"
 fi
 
 # Configure Pulumi token if pulumi.token.txt exists
 PULUMI_TOKEN_FILE="$REPO_DIR/pulumi.token.txt"
 if [ -f "$PULUMI_TOKEN_FILE" ]; then
     log "Configuring Pulumi token..."
-    PULUMI_TOKEN=$(cat "$PULUMI_TOKEN_FILE")
-    pulumi login --non-interactive ${PULUMI_TOKEN}
+    PULUMI_TOKEN=$(su - $SUDO_USER -c "cat $PULUMI_TOKEN_FILE")
+    # Source the bashrc to ensure Pulumi is in the PATH
+    su - $SUDO_USER -c "source ~/.bashrc && pulumi login --non-interactive ${PULUMI_TOKEN}"
 else
     log "Warning: pulumi.token.txt not found. You'll need to login to Pulumi manually."
 fi
 
 # Initialize and select Pulumi stack
 log "Configuring Pulumi stack..."
-cd "$REPO_DIR"
-npm install
-(pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)
+su - $SUDO_USER -c "cd $REPO_DIR && npm install"
+su - $SUDO_USER -c "source ~/.bashrc && cd $REPO_DIR && (pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)"
 
 log "Verifying installations..."
 echo "Git version: $(git --version)"
 echo "Node version: $(node --version)"
 echo "npm version: $(npm --version)"
 echo "Docker version: $(docker --version)"
-echo "Pulumi version: $(pulumi version)"
+echo "Pulumi version: $(su - $SUDO_USER -c "source ~/.bashrc && pulumi version")"
 
-if [ "$OS" = "Darwin" ]; then
-    log "Setup complete! Make sure Docker Desktop is running before proceeding."
-else
-    log "Setup complete! Please log out and back in for group changes to take effect."
-fi
-
+log "Setup complete! Please log out and back in for group changes to take effect."
 log "You can now cd into $REPO_DIR and run 'pulumi up'"
