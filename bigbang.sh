@@ -15,8 +15,8 @@ command_exists() {
 
 # Function to run command as user with proper PATH and environment
 run_as_user() {
-    # Create a script with all our environment variables and the command
-    TMP_SCRIPT=$(mktemp)
+    # Create a temporary script in the user's home directory
+    TMP_SCRIPT="/home/$SUDO_USER/tmp_script_$RANDOM.sh"
     echo "#!/bin/bash" > $TMP_SCRIPT
     echo "export PATH=\$PATH:/home/$SUDO_USER/.pulumi/bin" >> $TMP_SCRIPT
     # Pass through the Pulumi token if it exists
@@ -24,11 +24,14 @@ run_as_user() {
         echo "export PULUMI_ACCESS_TOKEN=$PULUMI_ACCESS_TOKEN" >> $TMP_SCRIPT
     fi
     echo "$1" >> $TMP_SCRIPT
-    chmod +x $TMP_SCRIPT
+
+    # Set proper ownership and permissions
+    chmod 755 $TMP_SCRIPT
+    chown $SUDO_USER:$SUDO_USER $TMP_SCRIPT
 
     # Run the script as the user
     su - $SUDO_USER -c $TMP_SCRIPT
-    rm $TMP_SCRIPT
+    rm -f $TMP_SCRIPT
 }
 
 # Check if running as root
