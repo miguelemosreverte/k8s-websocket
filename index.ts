@@ -1,151 +1,75 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as gcp from "@pulumi/gcp";
-import * as docker from "@pulumi/docker";
 import * as k8s from "@pulumi/kubernetes";
 
-// ---------------------------------------------------------------------
-// 1) PROJECT SETTINGS
-// ---------------------------------------------------------------------
+// Create a GKE cluster
+const cluster = new gcp.container.Cluster("my-cluster", {
+  initialNodeCount: 3,
+  minMasterVersion: "latest",
+  nodeConfig: {
+    machineType: "n1-standard-1",
+    oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  },
+});
 
-// Replace this with your real GCP project name:
-const projectName = "development_test_02";
-// Choose your preferred GCP region or zone:
-const location = "us-central1";
+// Export the cluster's endpoint
+export const clusterEndpoint = cluster.endpoint;
 
-// If the stack name is "gke", we deploy on GKE. Otherwise, Minikube.
-const useGke = pulumi.getStack() === "gke";
-
-// ---------------------------------------------------------------------
-// 2) CREATE (OR SKIP) A GKE CLUSTER
-// ---------------------------------------------------------------------
-
-let kubeconfig: pulumi.Output<string>;
-let cluster: gcp.container.Cluster | undefined;
-
-if (useGke) {
-  // Create a GKE cluster
-  cluster = new gcp.container.Cluster("gke-cluster", {
-    initialNodeCount: 1,
-    location,
-    minMasterVersion: "1.21",
-    nodeVersion: "1.21",
-    nodeConfig: {
-      machineType: "e2-medium",
-      oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
-    },
-    project: projectName,
-    network: "default",
-  });
-
-  // Build a kubeconfig from the cluster info
-  kubeconfig = pulumi
+// Create a Kubernetes provider instance using the cluster's kubeconfig
+const provider = new k8s.Provider("gkeK8s", {
+  kubeconfig: pulumi
     .all([cluster.name, cluster.endpoint, cluster.masterAuth])
     .apply(([name, endpoint, auth]) => {
-      const context = `${gcp.config.project}_${location}_${name}`;
       return `apiVersion: v1
 clusters:
 - cluster:
     certificate-authority-data: ${auth.clusterCaCertificate}
     server: https://${endpoint}
-  name: ${context}
+  name: ${name}
 contexts:
 - context:
-    cluster: ${context}
-    user: ${context}
-  name: ${context}
-current-context: ${context}
+    cluster: ${name}
+    user: ${name}
+  name: ${name}
+current-context: ${name}
 kind: Config
 preferences: {}
 users:
-- name: ${context}
+- name: ${name}
   user:
     auth-provider:
       config:
+        access-token: ${auth.accessToken}
         cmd-args: config config-helper --format=json
         cmd-path: gcloud
-        expiry-key: '{.credential.token_expiry}'
-        token-key: '{.credential.access_token}'
+        expiry: ${auth.expiry}
+        token: ${auth.accessToken}
       name: gcp
 `;
-    });
-} else {
-  // Use a generic Minikube kubeconfig (update IP if needed)
-  kubeconfig = pulumi.output(`
-apiVersion: v1
-clusters:
-- cluster:
-    server: https://$(minikube ip):8443
-  name: minikube
-contexts:
-- context:
-    cluster: minikube
-    user: minikube
-  name: minikube
-current-context: minikube
-kind: Config
-preferences: {}
-users:
-- name: minikube
-  user:
-    client-certificate: ~/.minikube/client.crt
-    client-key: ~/.minikube/client.key
-`);
-}
-
-// ---------------------------------------------------------------------
-// 3) BUILD & PUSH DOCKER IMAGE TO GCR
-// ---------------------------------------------------------------------
-
-// Name and tag for your container image
-const imageName = "gcr.io/development_test_02/chat-app:v1";
-
-// Retrieve the registry password
-const registry = gcp.container.getRegistryImage();
-const registryPassword = registry.then((r) => r.password);
-
-// Build/push the Docker image to GCR
-const chatAppImage = new docker.Image("chat-app-image", {
-  build: {
-    context: ".",
-    platform: "linux/amd64", // helpful on Apple Silicon
-  },
-  imageName,
-  registry: {
-    server: "gcr.io",
-    username: "_json_key",
-    password: pulumi.secret(registryPassword),
-  },
+    }),
 });
 
-// ---------------------------------------------------------------------
-// 4) CREATE A KUBERNETES PROVIDER
-// ---------------------------------------------------------------------
-const k8sProvider = new k8s.Provider("k8sProvider", {
-  kubeconfig,
-});
+// Create a Kubernetes namespace
+const ns = new k8s.core.v1.Namespace("hello-world-ns", {}, { provider });
 
-// ---------------------------------------------------------------------
-// 5) DEPLOYMENT + SERVICE
-// ---------------------------------------------------------------------
-
-// We’ll label our pods "app: chat-app"
-const appLabels = { app: "chat-app" };
-
-// K8s Deployment referencing the image we just built/pushed
+// Deploy a simple "Hello World" application
+const appLabels = { app: "hello-world" };
 const deployment = new k8s.apps.v1.Deployment(
-  "chat-app-deployment",
+  "hello-world-deployment",
   {
-    metadata: { name: "chat-app" },
+    metadata: {
+      namespace: ns.metadata.name,
+    },
     spec: {
-      replicas: 1,
       selector: { matchLabels: appLabels },
+      replicas: 2,
       template: {
         metadata: { labels: appLabels },
         spec: {
           containers: [
             {
-              name: "chat-app",
-              image: chatAppImage.imageName,
+              name: "hello-world",
+              image: "gcr.io/google-samples/node-hello:1.0",
               ports: [{ containerPort: 8080 }],
             },
           ],
@@ -153,38 +77,23 @@ const deployment = new k8s.apps.v1.Deployment(
       },
     },
   },
-  { provider: k8sProvider },
+  { provider },
 );
 
-// K8s Service of type LoadBalancer (on GKE) or NodePort/LoadBalancer on Minikube
 const service = new k8s.core.v1.Service(
-  "chat-app-service",
+  "hello-world-service",
   {
-    metadata: { name: "chat-app" },
+    metadata: {
+      namespace: ns.metadata.name,
+    },
     spec: {
       type: "LoadBalancer",
       selector: appLabels,
-      ports: [{ port: 8080, targetPort: 8080 }],
+      ports: [{ port: 80, targetPort: 8080 }],
     },
   },
-  { provider: k8sProvider },
+  { provider },
 );
 
-// ---------------------------------------------------------------------
-// 6) EXPORT OUTPUTS
-// ---------------------------------------------------------------------
-
-// If GKE, export cluster name/endpoint; otherwise "minikube"
-export const clusterName = useGke ? cluster!.name : pulumi.output("minikube");
-export const clusterEndpoint = useGke
-  ? cluster!.endpoint
-  : pulumi.output("https://$(minikube ip):8443");
-
-// Export the Docker image name so we can see where it was pushed
-export const deployedImage = chatAppImage.imageName;
-
-// Export the K8s service info
-export const serviceName = service.metadata.name;
-export const serviceIP = service.status.loadBalancer.ingress.apply(
-  (ing) => ing[0]?.ip ?? "Pending IP",
-);
+// Export the service's external IP
+export const serviceIP = service.status.loadBalancer.ingress[0].ip;
