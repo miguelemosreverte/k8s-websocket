@@ -85,23 +85,23 @@ users:
 // Build & push Docker image to GCR
 const imageName = "gcr.io/development_test_02/chat-app:v1";
 
-// Get the access token
-const dockerToken = gcp.container.getClusterAccessToken({
-  clusterId: cluster!.id,
-  zone: location,
-});
-
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
     context: ".",
     platform: "linux/amd64",
   },
   imageName,
-  registry: pulumi.output(dockerToken).apply((token) => ({
+  registry: {
     server: "gcr.io",
     username: "oauth2accesstoken",
-    password: pulumi.secret(token.accessToken), // mark secret
-  })),
+    password: gcp.container
+      .getCluster({
+        name: cluster!.name,
+        location,
+        project: projectName,
+      })
+      .then((cluster) => cluster.accessToken),
+  },
 });
 
 // Create a K8s provider
