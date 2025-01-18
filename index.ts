@@ -84,7 +84,12 @@ users:
 
 // Build & push Docker image to GCR
 const imageName = "gcr.io/development_test_02/chat-app:v1";
-const dockerToken = gcp.getAccessToken(); // uses service-account JSON from pulumi config
+
+// Get the access token
+const dockerToken = gcp.container.getClusterAccessToken({
+  clusterId: cluster!.id,
+  zone: location,
+});
 
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
@@ -95,7 +100,7 @@ const chatAppImage = new docker.Image("chat-app-image", {
   registry: pulumi.output(dockerToken).apply((token) => ({
     server: "gcr.io",
     username: "oauth2accesstoken",
-    password: pulumi.secret(token.token), // mark secret
+    password: pulumi.secret(token.accessToken), // mark secret
   })),
 });
 

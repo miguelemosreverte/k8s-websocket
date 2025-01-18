@@ -120,3 +120,5 @@ Taking down Minikube
 💀  Removed all traces of the "minikube" cluster.
 Teardown complete.
 ```
+
+* I did run `pulumi config set gcp:credentials --secret file://admin-key.gcloud.json`
