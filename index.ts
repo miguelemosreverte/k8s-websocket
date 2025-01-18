@@ -37,8 +37,7 @@ preferences: {}
 users:
 - name: ${name}
   user:
-    username: ${auth.username}
-    password: ${auth.password}
+    token: ${auth.accessToken}
 `;
     }),
 });
