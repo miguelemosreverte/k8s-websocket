@@ -13,6 +13,7 @@ const useGke = pulumi.getStack() === "gke";
 // Create a GKE cluster if useGke is true
 let kubeconfig: pulumi.Output<string>;
 let cluster: gcp.container.Cluster | undefined;
+
 if (useGke) {
   cluster = new gcp.container.Cluster("gke-cluster", {
     initialNodeCount: 1,
@@ -84,16 +85,26 @@ users:
 
 // Build and push Docker image
 const imageName = "gcr.io/development_test_02/chat-app:v1";
+
+// -- FIX: Ensure we have a defined string for the token --
+const token = gcp.config.accessToken;
+if (!token) {
+  throw new Error(
+    "No GCP access token found. Please set 'gcp:accessToken' in Pulumi config, or authenticate via Service Account.",
+  );
+}
+
+// Pass the token to Docker registry with pulumi.secret
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
     context: ".",
-    platform: "linux/amd64", // On Apple Silicon, often fixes base-image issues
+    platform: "linux/amd64", // Often needed on Apple Silicon
   },
   imageName: imageName,
   registry: {
     server: "gcr.io",
     username: "oauth2accesstoken",
-    password: pulumi.secret(gcp.config.accessToken),
+    password: pulumi.secret(token),
   },
 });
 
@@ -117,7 +128,7 @@ const deployment = new k8s.apps.v1.Deployment(
           containers: [
             {
               name: "chat-app",
-              image: chatAppImage.imageName, // uses our Docker build
+              image: chatAppImage.imageName,
               ports: [{ containerPort: 8080 }],
             },
           ],
@@ -152,8 +163,7 @@ export const clusterEndpoint = useGke
 export const deploymentName = deployment.metadata.name;
 export const serviceName = service.metadata.name;
 
-// Export the LoadBalancer IP as a string Output
-// Note the .apply(...) to handle 'undefined' gracefully
+// Safely export the LoadBalancer IP
 export const serviceIP = service.status.loadBalancer.ingress.apply(
   (ingressArray) => ingressArray[0]?.ip ?? "Pending IP",
 );
