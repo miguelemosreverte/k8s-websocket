@@ -56,17 +56,39 @@ if ! command_exists docker; then
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-    systemctl start docker
-    systemctl enable docker
-    usermod -aG docker $SUDO_USER
-    # Create docker group if it doesn't exist
+    # Ensure Docker is properly configured
+    systemctl start docker || true
+    systemctl enable docker || true
+
+    # Create and configure Docker group
     groupadd -f docker
-    # Add user to docker group
     usermod -aG docker $SUDO_USER
-    # Set proper permissions on docker.sock
-    chmod 666 /var/run/docker.sock
+
+    # Fix permissions
+    chmod 666 /var/run/docker.sock || true
+    chown root:docker /var/run/docker.sock || true
+
     # Restart Docker daemon
     systemctl restart docker
+
+    # Wait for Docker to be ready
+    timeout=30
+    while ! docker info >/dev/null 2>&1; do
+        if [ "$timeout" -le 0 ]; then
+            log "ERROR: Docker failed to start within timeout"
+            exit 1
+        fi
+        timeout=$((timeout-1))
+        sleep 1
+    done
+
+    # Verify Docker works
+    if ! docker info >/dev/null 2>&1; then
+        log "ERROR: Docker is not working properly"
+        log "Please try: sudo chmod 666 /var/run/docker.sock"
+        log "Then run: newgrp docker"
+        exit 1
+    fi
 fi
 
 # Install Pulumi if it's not in the user's path
@@ -110,5 +132,14 @@ echo "npm version: $(run_as_user "npm --version")"
 echo "Docker version: $(docker --version)"
 echo "Pulumi version: $(run_as_user "pulumi version")"
 
-log "Setup complete! Please log out and back in for group changes to take effect."
+# Final Docker verification
+if ! run_as_user "docker info" >/dev/null 2>&1; then
+    log "WARNING: Docker is not working for user $SUDO_USER"
+    log "Please run these commands manually:"
+    log "1. sudo chmod 666 /var/run/docker.sock"
+    log "2. newgrp docker"
+    log "3. docker info"
+fi
+
+log "Setup complete! If Docker is not working, please log out and back in for group changes to take effect."
 log "You can now cd into $REPO_DIR and run 'pulumi up'"
