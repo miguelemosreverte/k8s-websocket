@@ -85,7 +85,8 @@ fi
 # Configure Pulumi token and stack
 if [ -f "$REPO_DIR/pulumi.token.txt" ]; then
     log "Configuring Pulumi token..."
-    PULUMI_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt")
+    # Read token and ensure it has the pul: prefix
+    PULUMI_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt" | sed 's/^pul-/pul:/')
     run_as_user "pulumi login --non-interactive ${PULUMI_TOKEN}"
 
     log "Configuring Pulumi stack..."
