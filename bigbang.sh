@@ -13,9 +13,22 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to run command as user with proper PATH
+# Function to run command as user with proper PATH and environment
 run_as_user() {
-    su - $SUDO_USER -c "export PATH=\$PATH:/home/$SUDO_USER/.pulumi/bin; $1"
+    # Create a script with all our environment variables and the command
+    TMP_SCRIPT=$(mktemp)
+    echo "#!/bin/bash" > $TMP_SCRIPT
+    echo "export PATH=\$PATH:/home/$SUDO_USER/.pulumi/bin" >> $TMP_SCRIPT
+    # Pass through the Pulumi token if it exists
+    if [ -n "$PULUMI_ACCESS_TOKEN" ]; then
+        echo "export PULUMI_ACCESS_TOKEN=$PULUMI_ACCESS_TOKEN" >> $TMP_SCRIPT
+    fi
+    echo "$1" >> $TMP_SCRIPT
+    chmod +x $TMP_SCRIPT
+
+    # Run the script as the user
+    su - $SUDO_USER -c $TMP_SCRIPT
+    rm $TMP_SCRIPT
 }
 
 # Check if running as root
@@ -40,7 +53,8 @@ if ! command_exists node; then
     apt-get install -y nodejs npm
 fi
 
-# Install Docker if not present
+# Configure Docker - This section has been significantly updated
+log "Configuring Docker..."
 if ! command_exists docker; then
     log "Installing Docker..."
     apt-get install -y ca-certificates curl gnupg
@@ -55,43 +69,37 @@ if ! command_exists docker; then
 
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
 
-    # Ensure Docker is properly configured
-    systemctl start docker || true
-    systemctl enable docker || true
+# Always ensure Docker is properly configured
+log "Setting up Docker permissions..."
+systemctl stop docker || true
+groupadd -f docker
+usermod -aG docker $SUDO_USER
+rm -f /var/run/docker.sock
+systemctl start docker
+sleep 5  # Give Docker time to create the socket
+chmod 666 /var/run/docker.sock
+chown root:docker /var/run/docker.sock
 
-    # Create and configure Docker group
-    groupadd -f docker
-    usermod -aG docker $SUDO_USER
-
-    # Fix permissions
-    chmod 666 /var/run/docker.sock || true
-    chown root:docker /var/run/docker.sock || true
-
-    # Restart Docker daemon
+# Test Docker as the user
+if ! run_as_user "docker info" > /dev/null 2>&1; then
+    log "WARNING: Initial Docker test failed, attempting fixes..."
     systemctl restart docker
+    sleep 5
+    chmod 666 /var/run/docker.sock
 
-    # Wait for Docker to be ready
-    timeout=30
-    while ! docker info >/dev/null 2>&1; do
-        if [ "$timeout" -le 0 ]; then
-            log "ERROR: Docker failed to start within timeout"
-            exit 1
-        fi
-        timeout=$((timeout-1))
-        sleep 1
-    done
-
-    # Verify Docker works
-    if ! docker info >/dev/null 2>&1; then
-        log "ERROR: Docker is not working properly"
-        log "Please try: sudo chmod 666 /var/run/docker.sock"
-        log "Then run: newgrp docker"
+    if ! run_as_user "docker info" > /dev/null 2>&1; then
+        log "ERROR: Docker is still not accessible to $SUDO_USER"
+        log "Please try logging out and back in, then run: docker info"
+        log "If that doesn't work, reboot the system"
         exit 1
     fi
 fi
 
-# Install Pulumi if it's not in the user's path
+log "Docker is properly configured!"
+
+# Install Pulumi if needed
 if ! run_as_user "command -v pulumi" > /dev/null 2>&1; then
     log "Installing Pulumi..."
     run_as_user 'curl -fsSL https://get.pulumi.com | sh'
@@ -102,7 +110,7 @@ if ! run_as_user "command -v pulumi" > /dev/null 2>&1; then
     fi
 fi
 
-# Clone or update repository
+# Repository setup
 REPO_DIR="/home/$SUDO_USER/pulumi-k8s-websocket"
 if [ ! -d "$REPO_DIR" ]; then
     log "Cloning repository..."
@@ -115,11 +123,14 @@ fi
 # Configure Pulumi token and stack
 if [ -f "$REPO_DIR/pulumi.token.txt" ]; then
     log "Configuring Pulumi token..."
-    # Read token and set as environment variable
-    PULUMI_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt")
-    run_as_user "export PULUMI_ACCESS_TOKEN=${PULUMI_TOKEN} && cd $REPO_DIR && npm install && (pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)"
+    export PULUMI_ACCESS_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt")
 
-    # Configuration is now handled above with the token
+    # Add token to bashrc if not already there
+    if ! grep -q "PULUMI_ACCESS_TOKEN" "/home/$SUDO_USER/.bashrc"; then
+        echo "export PULUMI_ACCESS_TOKEN=$PULUMI_ACCESS_TOKEN" >> "/home/$SUDO_USER/.bashrc"
+    fi
+
+    run_as_user "cd $REPO_DIR && npm install && (pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)"
 else
     log "Warning: pulumi.token.txt not found. You'll need to login to Pulumi manually."
 fi
@@ -131,15 +142,7 @@ echo "Node version: $(run_as_user "node --version")"
 echo "npm version: $(run_as_user "npm --version")"
 echo "Docker version: $(docker --version)"
 echo "Pulumi version: $(run_as_user "pulumi version")"
+echo "Docker test: $(run_as_user "docker info >/dev/null 2>&1 && echo 'WORKING' || echo 'NOT WORKING'")"
 
-# Final Docker verification
-if ! run_as_user "docker info" >/dev/null 2>&1; then
-    log "WARNING: Docker is not working for user $SUDO_USER"
-    log "Please run these commands manually:"
-    log "1. sudo chmod 666 /var/run/docker.sock"
-    log "2. newgrp docker"
-    log "3. docker info"
-fi
-
-log "Setup complete! If Docker is not working, please log out and back in for group changes to take effect."
-log "You can now cd into $REPO_DIR and run 'pulumi up'"
+log "Setup complete! Please run: source ~/.bashrc"
+log "Then cd into $REPO_DIR and run 'pulumi up'"
