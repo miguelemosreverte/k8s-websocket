@@ -85,13 +85,11 @@ fi
 # Configure Pulumi token and stack
 if [ -f "$REPO_DIR/pulumi.token.txt" ]; then
     log "Configuring Pulumi token..."
-    # Read token and ensure it has the pul: prefix
-    PULUMI_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt" | sed 's/^pul-/pul:/')
-    run_as_user "pulumi login --non-interactive ${PULUMI_TOKEN}"
+    # Read token and set as environment variable
+    PULUMI_TOKEN=$(run_as_user "cat $REPO_DIR/pulumi.token.txt")
+    run_as_user "export PULUMI_ACCESS_TOKEN=${PULUMI_TOKEN} && cd $REPO_DIR && npm install && (pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)"
 
-    log "Configuring Pulumi stack..."
-    run_as_user "cd $REPO_DIR && npm install"
-    run_as_user "cd $REPO_DIR && (pulumi stack select gcloud 2>/dev/null || pulumi stack init gcloud)"
+    # Configuration is now handled above with the token
 else
     log "Warning: pulumi.token.txt not found. You'll need to login to Pulumi manually."
 fi
