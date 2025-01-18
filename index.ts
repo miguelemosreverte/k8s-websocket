@@ -87,7 +87,7 @@ const imageName = "gcr.io/development_test_02/chat-app:v1";
 const chatAppImage = new docker.Image("chat-app-image", {
   build: {
     context: ".",
-    platform: "linux/amd64", // On Apple Silicon, this often fixes 403 or base-image issues
+    platform: "linux/amd64", // On Apple Silicon, often fixes base-image issues
   },
   imageName: imageName,
   registry: {
@@ -142,11 +142,18 @@ const service = new k8s.core.v1.Service(
   { provider: k8sProvider },
 );
 
-// Export the URLs
+// Export the cluster info
 export const clusterName = useGke ? cluster!.name : pulumi.output("minikube");
 export const clusterEndpoint = useGke
   ? cluster!.endpoint
   : pulumi.output("https://$(minikube ip):8443");
+
+// Export deployment/service metadata
 export const deploymentName = deployment.metadata.name;
 export const serviceName = service.metadata.name;
-export const serviceIP = service.status.loadBalancer.ingress[0].ip;
+
+// Export the LoadBalancer IP as a string Output
+// Note the .apply(...) to handle 'undefined' gracefully
+export const serviceIP = service.status.loadBalancer.ingress.apply(
+  (ingressArray) => ingressArray[0]?.ip ?? "Pending IP",
+);
