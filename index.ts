@@ -37,14 +37,8 @@ preferences: {}
 users:
 - name: ${name}
   user:
-    auth-provider:
-      config:
-        access-token: ${auth.accessToken}
-        cmd-args: config config-helper --format=json
-        cmd-path: gcloud
-        expiry: ${auth.expiry}
-        token: ${auth.accessToken}
-      name: gcp
+    username: ${auth.username}
+    password: ${auth.password}
 `;
     }),
 });
