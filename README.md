@@ -122,3 +122,4 @@ Teardown complete.
 ```
 
 * I did run `pulumi config set gcp:credentials --secret file://admin-key.gcloud.json`
+and `pulumi config set gcp:project developer-test-02`

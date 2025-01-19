@@ -2,92 +2,131 @@ import * as pulumi from "@pulumi/pulumi";
 import * as gcp from "@pulumi/gcp";
 import * as k8s from "@pulumi/kubernetes";
 
+const name = "helloworld";
+
+// Get the latest GKE engine version
+const engineVersion = gcp.container
+  .getEngineVersions()
+  .then((v) => v.latestMasterVersion);
+
 // Create a GKE cluster
-const cluster = new gcp.container.Cluster("my-cluster", {
-  initialNodeCount: 3,
-  minMasterVersion: "latest",
+const cluster = new gcp.container.Cluster(name, {
+  initialNodeCount: 2,
+  minMasterVersion: engineVersion,
+  nodeVersion: engineVersion,
   nodeConfig: {
     machineType: "n1-standard-1",
-    oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    oauthScopes: [
+      "https://www.googleapis.com/auth/compute",
+      "https://www.googleapis.com/auth/devstorage.read_only",
+      "https://www.googleapis.com/auth/logging.write",
+      "https://www.googleapis.com/auth/monitoring",
+    ],
   },
 });
 
-// Export the cluster's endpoint
-export const clusterEndpoint = cluster.endpoint;
+// Export the Cluster name
+export const clusterName = cluster.name;
 
-// Create a Kubernetes provider instance using the cluster's kubeconfig
-const provider = new k8s.Provider("gkeK8s", {
-  kubeconfig: pulumi
-    .all([cluster.name, cluster.endpoint, cluster.masterAuth])
-    .apply(([name, endpoint, auth]) => {
-      return `apiVersion: v1
+// Manufacture a GKE-style kubeconfig
+export const kubeconfig = pulumi
+  .all([cluster.name, cluster.endpoint, cluster.masterAuth])
+  .apply(([name, endpoint, masterAuth]) => {
+    const context = `${gcp.config.project}_${gcp.config.zone}_${name}`;
+    return `apiVersion: v1
 clusters:
 - cluster:
-    certificate-authority-data: ${auth.clusterCaCertificate}
+    certificate-authority-data: ${masterAuth.clusterCaCertificate}
     server: https://${endpoint}
-  name: ${name}
+  name: ${context}
 contexts:
 - context:
-    cluster: ${name}
-    user: ${name}
-  name: ${name}
-current-context: ${name}
+    cluster: ${context}
+    user: ${context}
+  name: ${context}
+current-context: ${context}
 kind: Config
 preferences: {}
 users:
-- name: ${name}
+- name: ${context}
   user:
-    client-certificate-data: ${auth.clientCertificate}
-    client-key-data: ${auth.clientKey}
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+      installHint: Install gke-gcloud-auth-plugin for use with kubectl by following
+        https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
+      provideClusterInfo: true
 `;
-    }),
+  });
+
+// Create a Kubernetes provider instance that uses our cluster from above
+const clusterProvider = new k8s.Provider(name, {
+  kubeconfig: kubeconfig,
 });
 
-// Create a Kubernetes namespace
-const ns = new k8s.core.v1.Namespace("hello-world-ns", {}, { provider });
+// Create a Kubernetes Namespace
+const ns = new k8s.core.v1.Namespace(name, {}, { provider: clusterProvider });
 
-// Deploy a simple "Hello World" application
-const appLabels = { app: "hello-world" };
+// Export the Namespace name
+export const namespaceName = ns.metadata.apply((m) => m.name);
+
+// Create a NGINX Deployment
+const appLabels = { appClass: name };
 const deployment = new k8s.apps.v1.Deployment(
-  "hello-world-deployment",
+  name,
   {
     metadata: {
-      namespace: ns.metadata.name,
+      namespace: namespaceName,
+      labels: appLabels,
     },
     spec: {
+      replicas: 1,
       selector: { matchLabels: appLabels },
-      replicas: 2,
       template: {
-        metadata: { labels: appLabels },
+        metadata: {
+          labels: appLabels,
+        },
         spec: {
           containers: [
             {
-              name: "hello-world",
-              image: "gcr.io/google-samples/node-hello:1.0",
-              ports: [{ containerPort: 8080 }],
+              name: name,
+              image: "nginx:latest",
+              ports: [{ name: "http", containerPort: 80 }],
             },
           ],
         },
       },
     },
   },
-  { provider },
+  {
+    provider: clusterProvider,
+  },
 );
 
+// Export the Deployment name
+export const deploymentName = deployment.metadata.apply((m) => m.name);
+
+// Create a LoadBalancer Service for the NGINX Deployment
 const service = new k8s.core.v1.Service(
-  "hello-world-service",
+  name,
   {
     metadata: {
-      namespace: ns.metadata.name,
+      labels: appLabels,
+      namespace: namespaceName,
     },
     spec: {
       type: "LoadBalancer",
+      ports: [{ port: 80, targetPort: "http" }],
       selector: appLabels,
-      ports: [{ port: 80, targetPort: 8080 }],
     },
   },
-  { provider },
+  {
+    provider: clusterProvider,
+  },
 );
 
-// Export the service's external IP
-export const serviceIP = service.status.loadBalancer.ingress[0].ip;
+// Export the Service name and public LoadBalancer endpoint
+export const serviceName = service.metadata.apply((m) => m.name);
+export const servicePublicIP = service.status.apply(
+  (s) => s.loadBalancer.ingress[0].ip,
+);
