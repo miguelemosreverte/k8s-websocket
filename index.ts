@@ -1,7 +1,7 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as docker from "@pulumi/docker";
 import * as k8s from "@pulumi/kubernetes";
-import * as tf from "@pulumi/tf";
+import * as terraform from "@pulumi/terraform";
 
 // Config
 const config = new pulumi.Config();
@@ -13,17 +13,25 @@ const projectId = "development-test-02";
 let k8sProvider: k8s.Provider | undefined;
 
 if (!isMinikube) {
-  const gkeCluster = new tf.Resource("gke-cluster", {
-    type: "google",
+  const gkeCluster = new terraform.state.RemoteStateReference("gke-cluster", {
+    backendType: "gcs",
+    config: {
+      bucket: `${projectId}-terraform-state`,
+      prefix: "gke",
+    },
+  });
+
+  const clusterModule = new terraform.state.DataSource("gke", {
+    resource: gkeCluster,
+    module: "google-kubernetes-engine",
     source: "terraform-google-modules/kubernetes-engine/google",
     version: "28.0.0",
-    properties: {
+    variables: {
       project_id: projectId,
       name: "gke-cluster",
       region: "us-central1",
       network: "default",
       subnetwork: "default",
-
       node_pools: [
         {
           name: "default-node-pool",
@@ -41,13 +49,9 @@ if (!isMinikube) {
   });
 
   // Create k8s provider from GKE cluster
-  k8sProvider = new k8s.Provider(
-    "gke-k8s",
-    {
-      kubeconfig: gkeCluster.properties.kubeconfig,
-    },
-    { dependsOn: [gkeCluster] },
-  );
+  k8sProvider = new k8s.Provider("gke-k8s", {
+    kubeconfig: clusterModule.getOutput("kubeconfig"),
+  });
 }
 
 // Registry setup for GCloud
