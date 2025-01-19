@@ -1,7 +1,8 @@
-project_id           = "your-project-id"
-region              = "us-central1"
-zone                = "us-central1-a"
-instance_name       = "pulumi-websocket-instance"
-ssh_username        = "your-username"
-ssh_public_key_path = "~/.ssh/id_rsa.pub"
-ssh_private_key_path = "~/.ssh/id_rsa"
+credentials_file = "admin-key.gcloud.json"
+project_id       = "developer-test-02"
+region           = "us-central1"
+cluster_name     = "my-gke-cluster"
+machine_type     = "e2-medium"
+min_node_count   = 1
+max_node_count   = 3
+disk_size_gb     = 100

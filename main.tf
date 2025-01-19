@@ -1,126 +1,269 @@
+###############################################################################
+# Terraform Settings & Providers
+###############################################################################
 terraform {
   required_providers {
     google = {
-      source  = "hashicorp/google"
-      version = "~> 4.0"
+      source = "hashicorp/google"
+      # Matches the GKE module 35.x requirement: google >= 6.11.0, < 7.0.0
+      version = "~> 6.16.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.10"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.10"
+    }
+  }
+
+  # Not strictly required, but helpful
+  required_version = ">= 1.0.0"
+}
+
+provider "google" {
+  credentials = file(var.credentials_file)
+  project     = var.project_id
+  region      = var.region
+}
+
+# The kubernetes provider uses the GKE cluster endpoint. We'll configure
+# it AFTER we create the cluster (by using data.google_client_config or
+# module output).
+provider "kubernetes" {
+  host                   = "https://${module.gke.endpoint}"
+  token                  = data.google_client_config.default.access_token
+  cluster_ca_certificate = base64decode(module.gke.ca_certificate)
+}
+
+# We also use the Helm provider to install the NGINX Ingress Controller chart
+provider "helm" {
+  # Same context as the Kubernetes provider
+  kubernetes {
+    host                   = "https://${module.gke.endpoint}"
+    token                  = data.google_client_config.default.access_token
+    cluster_ca_certificate = base64decode(module.gke.ca_certificate)
   }
 }
 
-# Configure the Google Cloud provider
-provider "google" {
-  project = var.project_id
-  region  = var.region
-  zone    = var.zone
+###############################################################################
+# Variables
+###############################################################################
+variable "credentials_file" {
+  type        = string
+  description = "Path to the service account JSON key file"
 }
 
-# Define variables
 variable "project_id" {
-  description = "The ID of the GCP project"
   type        = string
+  description = "The GCP project ID where the cluster will be created"
 }
 
 variable "region" {
-  description = "The region to deploy to"
   type        = string
-  default     = "us-central1"
+  description = "The region for the GKE cluster"
 }
 
-variable "zone" {
-  description = "The zone to deploy to"
+variable "cluster_name" {
   type        = string
-  default     = "us-central1-a"
+  description = "Name of the GKE cluster"
 }
 
-variable "instance_name" {
-  description = "Name of the VM instance"
+variable "machine_type" {
   type        = string
-  default     = "pulumi-websocket-instance"
+  description = "The machine type for the GKE nodes"
 }
 
-# Create a VM instance
-resource "google_compute_instance" "vm_instance" {
-  name         = var.instance_name
-  machine_type = "e2-medium"
+variable "min_node_count" {
+  type        = number
+  description = "Minimum number of nodes in the node pool"
+}
 
-  boot_disk {
-    initialize_params {
-      image = "debian-cloud/debian-11"
+variable "max_node_count" {
+  type        = number
+  description = "Maximum number of nodes in the node pool"
+}
+
+variable "disk_size_gb" {
+  type        = number
+  description = "Size of the disk attached to each node, in GB"
+}
+
+###############################################################################
+# Data Source: Current GCP Auth
+###############################################################################
+data "google_client_config" "default" {}
+
+###############################################################################
+# GKE Cluster Module
+###############################################################################
+module "gke" {
+  source  = "terraform-google-modules/kubernetes-engine/google"
+  version = "~> 35.0"
+
+  project_id = var.project_id
+  name       = var.cluster_name
+  region     = var.region
+
+  # If you have a custom VPC or subnetwork, set them here. Otherwise, "default".
+  network    = "default"
+  subnetwork = "default"
+
+  # For a simple setup, skip custom secondary ranges
+  ip_range_pods     = null
+  ip_range_services = null
+
+  # Remove the default (Google-managed) node pool
+  remove_default_node_pool = true
+
+  node_pools = [
+    {
+      name               = "default-node-pool"
+      machine_type       = var.machine_type
+      disk_type          = "pd-standard"
+      disk_size_gb       = var.disk_size_gb
+      image_type         = "COS_CONTAINERD"
+      auto_repair        = true
+      auto_upgrade       = true
+      preemptible        = false
+      initial_node_count = var.min_node_count
+
+      # Enable autoscaling
+      enable_autoscaling = true
+      min_count          = var.min_node_count
+      max_count          = var.max_node_count
+    },
+  ]
+}
+
+###############################################################################
+# Helm: Install the NGINX Ingress Controller
+###############################################################################
+resource "helm_release" "nginx_ingress" {
+  name             = "nginx-ingress"
+  repository       = "https://kubernetes.github.io/ingress-nginx"
+  chart            = "ingress-nginx"
+  version          = "4.7.1" # or any stable version
+  create_namespace = true
+  namespace        = "ingress-nginx" # or "default"
+
+  # Customize the helm chart if needed
+  # set {
+  #   name  = "controller.service.type"
+  #   value = "LoadBalancer"
+  # }
+}
+
+###############################################################################
+# Deploy a WebSocket-Capable App (Example: basic NGINX)
+###############################################################################
+# Replace "nginx:latest" with your own container that can handle websockets
+resource "kubernetes_deployment" "websocket_demo" {
+  metadata {
+    name      = "websocket-demo-deployment"
+    namespace = "default"
+    labels = {
+      app = "websocket-demo"
     }
   }
 
-  network_interface {
-    network = "default"
-    access_config {
-      // Ephemeral public IP
+  spec {
+    replicas = 1
+    selector {
+      match_labels = {
+        app = "websocket-demo"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          app = "websocket-demo"
+        }
+      }
+      spec {
+        container {
+          name  = "websocket-demo"
+          image = "nginx:1.27.3"
+
+          # Expose a port (80). If your actual WebSocket server listens on, say, 8080,
+          # update this containerPort accordingly.
+          port {
+            container_port = 80
+          }
+        }
+      }
     }
   }
 
-  metadata = {
-    ssh-keys = "${var.ssh_username}:${file(var.ssh_public_key_path)}"
+  depends_on = [module.gke, helm_release.nginx_ingress]
+}
+
+resource "kubernetes_service" "websocket_demo_svc" {
+  metadata {
+    name      = "websocket-demo-service"
+    namespace = "default"
   }
 
-  # Allow HTTP traffic
-  tags = ["http-server"]
-}
-
-# Create firewall rule for HTTP
-resource "google_compute_firewall" "http" {
-  name    = "allow-http"
-  network = "default"
-
-  allow {
-    protocol = "tcp"
-    ports    = ["80", "8080"]
+  spec {
+    selector = {
+      app = "websocket-demo"
+    }
+    type = "ClusterIP"
+    port {
+      port        = 80
+      target_port = 80
+    }
   }
 
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["http-server"]
+  depends_on = [module.gke, helm_release.nginx_ingress]
 }
 
-# The bigbang script will be uploaded and executed
-resource "null_resource" "setup" {
-  depends_on = [google_compute_instance.vm_instance]
+###############################################################################
+# Ingress Resource
+###############################################################################
+# This Ingress uses annotations for the NGINX Ingress Controller
+resource "kubernetes_ingress_v1" "websocket_demo_ingress" {
+  metadata {
+    name      = "websocket-demo-ingress"
+    namespace = "default"
 
-  connection {
-    type        = "ssh"
-    user        = var.ssh_username
-    private_key = file(var.ssh_private_key_path)
-    host        = google_compute_instance.vm_instance.network_interface[0].access_config[0].nat_ip
+    annotations = {
+      "kubernetes.io/ingress.class" = "nginx"
+      # Optional: tweak timeouts for websockets, etc.
+      # "nginx.ingress.kubernetes.io/proxy-read-timeout"  = "3600"
+      # "nginx.ingress.kubernetes.io/proxy-send-timeout"  = "3600"
+      # "nginx.ingress.kubernetes.io/websocket-services"  = "websocket-demo-service"
+    }
   }
 
-  # Upload the bigbang script
-  provisioner "file" {
-    source      = "bigbang.sh"
-    destination = "/tmp/bigbang.sh"
+  spec {
+    rule {
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = kubernetes_service.websocket_demo_svc.metadata[0].name
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
-  # Execute the script
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x /tmp/bigbang.sh",
-      "sudo /tmp/bigbang.sh"
-    ]
-  }
+  depends_on = [module.gke, helm_release.nginx_ingress]
 }
 
-# Output the instance IP
-output "instance_ip" {
-  value = google_compute_instance.vm_instance.network_interface[0].access_config[0].nat_ip
-}
-
-# Additional required variables
-variable "ssh_username" {
-  description = "SSH username for the VM"
-  type        = string
-}
-
-variable "ssh_public_key_path" {
-  description = "Path to SSH public key file"
-  type        = string
-}
-
-variable "ssh_private_key_path" {
-  description = "Path to SSH private key file"
-  type        = string
+###############################################################################
+# Outputs
+###############################################################################
+output "kubectl_command" {
+  description = "Configure kubectl for this cluster"
+  value       = "gcloud container clusters get-credentials ${var.cluster_name} --region ${var.region} --project ${var.project_id}"
 }
