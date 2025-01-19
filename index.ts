@@ -37,7 +37,8 @@ preferences: {}
 users:
 - name: ${name}
   user:
-    token: ${auth.accessToken}
+    client-certificate-data: ${auth.clientCertificate}
+    client-key-data: ${auth.clientKey}
 `;
     }),
 });
