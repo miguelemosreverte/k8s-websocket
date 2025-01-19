@@ -32,56 +32,43 @@ if (!isMinikube) {
     },
   });
 
-  // Export the cluster details
-  const clusterInfo = pulumi
+  // Get credentials for the cluster
+  const clusterKubeconfig = pulumi
     .all([cluster.name, cluster.endpoint, cluster.masterAuth])
-    .apply(([name, endpoint, auth]) => ({
-      name: name,
-      endpoint: endpoint,
-      clusterCaCertificate: auth.clusterCaCertificate,
-    }));
+    .apply(([name, endpoint, masterAuth]) => {
+      return `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: ${masterAuth.clusterCaCertificate}
+    server: https://${endpoint}
+  name: ${name}
+contexts:
+- context:
+    cluster: ${name}
+    user: ${name}
+  name: ${name}
+current-context: ${name}
+users:
+- name: ${name}
+  user:
+    auth-provider:
+      config:
+        cmd-args: config config-helper --format=json
+        cmd-path: gcloud
+        expiry-key: '{.credential.token_expiry}'
+        token-key: '{.credential.access_token}'
+      name: gcp`;
+    });
 
-  // Create a k8s provider using the GKE cluster
-  k8sProvider = new k8s.Provider("gke-k8s", {
-    kubeconfig: clusterInfo.apply((info) => {
-      return JSON.stringify({
-        apiVersion: "v1",
-        kind: "Config",
-        clusters: [
-          {
-            cluster: {
-              server: `https://${info.endpoint}`,
-              certificateAuthorityData: info.clusterCaCertificate,
-            },
-            name: "kubernetes",
-          },
-        ],
-        contexts: [
-          {
-            context: {
-              cluster: "kubernetes",
-              user: "kubernetes-admin",
-            },
-            name: "kubernetes-admin@kubernetes",
-          },
-        ],
-        currentContext: "kubernetes-admin@kubernetes",
-        users: [
-          {
-            name: "kubernetes-admin",
-            user: {
-              exec: {
-                apiVersion: "client.authentication.k8s.io/v1beta1",
-                command: "gke-gcloud-auth-plugin",
-                installHint: "Install gke-gcloud-auth-plugin",
-                provideClusterInfo: true,
-              },
-            },
-          },
-        ],
-      });
-    }),
-  });
+  // Create k8s provider with the kubeconfig
+  k8sProvider = new k8s.Provider(
+    "gke-k8s",
+    {
+      kubeconfig: clusterKubeconfig,
+    },
+    { dependsOn: [nodePool] },
+  ); // Ensure node pool is ready
 }
 
 // Registry setup for GCloud
