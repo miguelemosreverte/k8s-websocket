@@ -1,12 +1,74 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as docker from "@pulumi/docker";
 import * as k8s from "@pulumi/kubernetes";
+import * as gcp from "@pulumi/gcp";
 
 // Config
 const config = new pulumi.Config();
 const environment = config.get("environment") || "minikube";
 const isMinikube = environment === "minikube";
 const projectId = "development-test-02";
+
+let k8sProvider: k8s.Provider;
+
+if (!isMinikube) {
+  // Create the GKE cluster
+  const cluster = new gcp.container.Cluster("gke-cluster", {
+    name: "gke-cluster",
+    location: "us-central1",
+    initialNodeCount: 2,
+    minMasterVersion: "1.27",
+    project: projectId,
+    // Configuration for nodes
+    nodeConfig: {
+      machineType: "n1-standard-1",
+      oauthScopes: [
+        "https://www.googleapis.com/auth/compute",
+        "https://www.googleapis.com/auth/devstorage.read_only",
+        "https://www.googleapis.com/auth/logging.write",
+        "https://www.googleapis.com/auth/monitoring",
+      ],
+    },
+  });
+
+  // Get credentials for the cluster
+  const clusterKubeconfig = pulumi
+    .all([cluster.name, cluster.endpoint, cluster.masterAuth])
+    .apply(([name, endpoint, masterAuth]) => {
+      const context = `${projectId}_${cluster.location}_${name}`;
+      return `apiVersion: v1
+kind: Config
+clusters:
+- name: ${context}
+  cluster:
+    server: https://${endpoint}
+    certificate-authority-data: ${masterAuth.clusterCaCertificate}
+contexts:
+- name: ${context}
+  context:
+    cluster: ${context}
+    user: ${context}
+current-context: ${context}
+users:
+- name: ${context}
+  user:
+    auth-provider:
+      config:
+        cmd-args: config config-helper --format=json
+        cmd-path: gcloud
+        expiry-key: '{.credential.token_expiry}'
+        token-key: '{.credential.access_token}'
+      name: gcp`;
+    });
+
+  // Create the k8s provider with the kubeconfig
+  k8sProvider = new k8s.Provider("gke-k8s", {
+    kubeconfig: clusterKubeconfig,
+  });
+} else {
+  // For minikube, use the default provider
+  k8sProvider = new k8s.Provider("k8s", {});
+}
 
 // Registry setup for GCloud
 const registryServer = !isMinikube ? `gcr.io/${projectId}` : undefined;
@@ -35,9 +97,6 @@ const chatAppImage = new docker.Image("chat-app-image", {
         }
       : undefined,
 });
-
-// Let Pulumi use the default kubeconfig, just like kubectl
-const k8sProvider = new k8s.Provider("k8s");
 
 // Application deployment
 const appLabels = { app: "chat-app" };
