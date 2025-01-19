@@ -4,9 +4,13 @@ import * as k8s from "@pulumi/kubernetes";
 
 const name = "helloworld";
 
+// Set the region or zone
+const region = "us-central1"; // Change to your desired region
+const zone = "us-central1-a"; // Change to your desired zone
+
 // Get the latest GKE engine version
 const engineVersion = gcp.container
-  .getEngineVersions()
+  .getEngineVersions({ location: zone })
   .then((v) => v.latestMasterVersion);
 
 // Create a GKE cluster
@@ -14,6 +18,7 @@ const cluster = new gcp.container.Cluster(name, {
   initialNodeCount: 2,
   minMasterVersion: engineVersion,
   nodeVersion: engineVersion,
+  location: zone,
   nodeConfig: {
     machineType: "n1-standard-1",
     oauthScopes: [
@@ -32,7 +37,7 @@ export const clusterName = cluster.name;
 export const kubeconfig = pulumi
   .all([cluster.name, cluster.endpoint, cluster.masterAuth])
   .apply(([name, endpoint, masterAuth]) => {
-    const context = `${gcp.config.project}_${gcp.config.zone}_${name}`;
+    const context = `${gcp.config.project}_${zone}_${name}`;
     return `apiVersion: v1
 clusters:
 - cluster:
