@@ -10,6 +10,8 @@ const isMinikube = environment === "minikube";
 const projectId = "development-test-02";
 
 let k8sProvider: k8s.Provider | undefined;
+let deployment: k8s.apps.v1.Deployment | undefined;
+let service: k8s.core.v1.Service | undefined;
 
 if (!isMinikube) {
   // First create the GKE cluster
@@ -17,9 +19,7 @@ if (!isMinikube) {
     location: "us-central1",
     initialNodeCount: 2,
     project: projectId,
-    // Remove the default node pool after cluster creation
     removeDefaultNodePool: true,
-    // Enable Workload Identity
     workloadIdentityConfig: {
       workloadPool: `${projectId}.svc.id.goog`,
     },
@@ -35,7 +35,6 @@ if (!isMinikube) {
       preemptible: false,
       machineType: "n1-standard-1",
       oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      // Enable Workload Identity on the node pool
       workloadMetadataConfig: {
         mode: "GKE_METADATA",
       },
@@ -75,7 +74,7 @@ users:
       kubeconfig: kubeconfig,
     },
     { dependsOn: [nodePool] },
-  ); // Important: Wait for the node pool
+  );
 }
 
 // Registry setup for GCloud
@@ -110,7 +109,7 @@ const chatAppImage = new docker.Image("chat-app-image", {
 if (k8sProvider) {
   // Application deployment
   const appLabels = { app: "chat-app" };
-  const deployment = new k8s.apps.v1.Deployment(
+  deployment = new k8s.apps.v1.Deployment(
     "chat-app-deployment",
     {
       metadata: { name: "chat-app" },
@@ -135,7 +134,7 @@ if (k8sProvider) {
   );
 
   // Service
-  const service = new k8s.core.v1.Service(
+  service = new k8s.core.v1.Service(
     "chat-app-service",
     {
       metadata: { name: "chat-app" },
@@ -147,8 +146,8 @@ if (k8sProvider) {
     },
     { provider: k8sProvider },
   );
-
-  // Exports
-  export const deploymentName = deployment.metadata.name;
-  export const serviceName = service.metadata.name;
 }
+
+// Exports - now outside the conditional block
+export const deploymentName = deployment?.metadata.name;
+export const serviceName = service?.metadata.name;
