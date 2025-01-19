@@ -15,18 +15,21 @@ let service: k8s.core.v1.Service | undefined;
 
 if (!isMinikube) {
   // First create the GKE cluster
-  const cluster = new gcp.container.Cluster("gke-cluster", {
+  const cluster = new gcp.container.Cluster("chat-app-cluster", {
+    name: "chat-app-cluster",
     location: "us-central1",
     initialNodeCount: 2,
     project: projectId,
     removeDefaultNodePool: true,
+    deletionProtection: false, // Explicitly disable deletion protection
     workloadIdentityConfig: {
       workloadPool: `${projectId}.svc.id.goog`,
     },
   });
 
   // Create a separately managed node pool
-  const nodePool = new gcp.container.NodePool("primary-nodes", {
+  const nodePool = new gcp.container.NodePool("chat-app-nodes", {
+    name: "chat-app-nodes",
     cluster: cluster.name,
     location: "us-central1",
     project: projectId,
@@ -69,7 +72,7 @@ users:
 
   // Create the k8s provider with the kubeconfig
   k8sProvider = new k8s.Provider(
-    "gke-k8s",
+    "chat-app-k8s",
     {
       kubeconfig: kubeconfig,
     },
@@ -148,6 +151,6 @@ if (k8sProvider) {
   );
 }
 
-// Exports - now outside the conditional block
+// Exports
 export const deploymentName = deployment?.metadata.name;
 export const serviceName = service?.metadata.name;
