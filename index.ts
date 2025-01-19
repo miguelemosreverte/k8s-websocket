@@ -9,65 +9,73 @@ const environment = config.get("environment") || "minikube";
 const isMinikube = environment === "minikube";
 const projectId = "development-test-02";
 
-let k8sProvider: k8s.Provider;
+let k8sProvider: k8s.Provider | undefined;
 
 if (!isMinikube) {
-  // Create the GKE cluster
+  // First create the GKE cluster
   const cluster = new gcp.container.Cluster("gke-cluster", {
-    name: "gke-cluster",
     location: "us-central1",
     initialNodeCount: 2,
-    minMasterVersion: "1.27",
     project: projectId,
-    // Configuration for nodes
-    nodeConfig: {
-      machineType: "n1-standard-1",
-      oauthScopes: [
-        "https://www.googleapis.com/auth/compute",
-        "https://www.googleapis.com/auth/devstorage.read_only",
-        "https://www.googleapis.com/auth/logging.write",
-        "https://www.googleapis.com/auth/monitoring",
-      ],
+    // Remove the default node pool after cluster creation
+    removeDefaultNodePool: true,
+    // Enable Workload Identity
+    workloadIdentityConfig: {
+      workloadPool: `${projectId}.svc.id.goog`,
     },
   });
 
-  // Get credentials for the cluster
-  const clusterKubeconfig = pulumi
-    .all([cluster.name, cluster.endpoint, cluster.masterAuth])
-    .apply(([name, endpoint, masterAuth]) => {
-      const context = `${projectId}_${cluster.location}_${name}`;
+  // Create a separately managed node pool
+  const nodePool = new gcp.container.NodePool("primary-nodes", {
+    cluster: cluster.name,
+    location: "us-central1",
+    project: projectId,
+    nodeCount: 2,
+    nodeConfig: {
+      preemptible: false,
+      machineType: "n1-standard-1",
+      oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
+      // Enable Workload Identity on the node pool
+      workloadMetadataConfig: {
+        mode: "GKE_METADATA",
+      },
+    },
+  });
+
+  const kubeconfig = pulumi
+    .all([cluster.name, cluster.endpoint, cluster.masterAuth, cluster.location])
+    .apply(([name, endpoint, auth, location]) => {
       return `apiVersion: v1
 kind: Config
 clusters:
-- name: ${context}
-  cluster:
+- cluster:
+    certificate-authority-data: ${auth.clusterCaCertificate}
     server: https://${endpoint}
-    certificate-authority-data: ${masterAuth.clusterCaCertificate}
+  name: ${name}
 contexts:
-- name: ${context}
-  context:
-    cluster: ${context}
-    user: ${context}
-current-context: ${context}
+- context:
+    cluster: ${name}
+    user: ${name}
+  name: ${name}
+current-context: ${name}
 users:
-- name: ${context}
+- name: ${name}
   user:
-    auth-provider:
-      config:
-        cmd-args: config config-helper --format=json
-        cmd-path: gcloud
-        expiry-key: '{.credential.token_expiry}'
-        token-key: '{.credential.access_token}'
-      name: gcp`;
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+      installHint: Install gke-gcloud-auth-plugin for use with kubectl by following https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
+      provideClusterInfo: true`;
     });
 
   // Create the k8s provider with the kubeconfig
-  k8sProvider = new k8s.Provider("gke-k8s", {
-    kubeconfig: clusterKubeconfig,
-  });
-} else {
-  // For minikube, use the default provider
-  k8sProvider = new k8s.Provider("k8s", {});
+  k8sProvider = new k8s.Provider(
+    "gke-k8s",
+    {
+      kubeconfig: kubeconfig,
+    },
+    { dependsOn: [nodePool] },
+  ); // Important: Wait for the node pool
 }
 
 // Registry setup for GCloud
@@ -98,47 +106,49 @@ const chatAppImage = new docker.Image("chat-app-image", {
       : undefined,
 });
 
-// Application deployment
-const appLabels = { app: "chat-app" };
-const deployment = new k8s.apps.v1.Deployment(
-  "chat-app-deployment",
-  {
-    metadata: { name: "chat-app" },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: appLabels },
-      template: {
-        metadata: { labels: appLabels },
-        spec: {
-          containers: [
-            {
-              name: "chat-app",
-              image: chatAppImage.imageName,
-              ports: [{ containerPort: 8080 }],
-            },
-          ],
+// Only proceed with k8s resources if we have a provider
+if (k8sProvider) {
+  // Application deployment
+  const appLabels = { app: "chat-app" };
+  const deployment = new k8s.apps.v1.Deployment(
+    "chat-app-deployment",
+    {
+      metadata: { name: "chat-app" },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: appLabels },
+        template: {
+          metadata: { labels: appLabels },
+          spec: {
+            containers: [
+              {
+                name: "chat-app",
+                image: chatAppImage.imageName,
+                ports: [{ containerPort: 8080 }],
+              },
+            ],
+          },
         },
       },
     },
-  },
-  { provider: k8sProvider },
-);
+    { provider: k8sProvider },
+  );
 
-// Service
-const service = new k8s.core.v1.Service(
-  "chat-app-service",
-  {
-    metadata: { name: "chat-app" },
-    spec: {
-      type: isMinikube ? "NodePort" : "LoadBalancer",
-      selector: appLabels,
-      ports: [{ port: 8080, targetPort: 8080 }],
+  // Service
+  const service = new k8s.core.v1.Service(
+    "chat-app-service",
+    {
+      metadata: { name: "chat-app" },
+      spec: {
+        type: "LoadBalancer",
+        selector: appLabels,
+        ports: [{ port: 8080, targetPort: 8080 }],
+      },
     },
-  },
-  { provider: k8sProvider },
-);
+    { provider: k8sProvider },
+  );
 
-// Exports
-export const deploymentName = deployment.metadata.name;
-export const serviceName = service.metadata.name;
-export const nodePort = isMinikube ? service.spec.ports[0].nodePort : undefined;
+  // Exports
+  export const deploymentName = deployment.metadata.name;
+  export const serviceName = service.metadata.name;
+}
