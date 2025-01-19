@@ -1,7 +1,7 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as docker from "@pulumi/docker";
 import * as k8s from "@pulumi/kubernetes";
-import * as terraform from "@pulumi/terraform";
+import * as gcp from "@pulumi/gcp";
 
 // Config
 const config = new pulumi.Config();
@@ -9,48 +9,78 @@ const environment = config.get("environment") || "minikube";
 const isMinikube = environment === "minikube";
 const projectId = "development-test-02";
 
-// Create GKE cluster using official Terraform module if not using minikube
+// Create GKE cluster if not using minikube
 let k8sProvider: k8s.Provider | undefined;
 
 if (!isMinikube) {
-  const gkeCluster = new terraform.state.RemoteStateReference("gke-cluster", {
-    backendType: "gcs",
-    config: {
-      bucket: `${projectId}-terraform-state`,
-      prefix: "gke",
+  // Create a GKE cluster
+  const cluster = new gcp.container.Cluster("gke-cluster", {
+    project: projectId,
+    location: "us-central1",
+    initialNodeCount: 1,
+    removeDefaultNodePool: true,
+  });
+
+  const nodePool = new gcp.container.NodePool("primary", {
+    project: projectId,
+    location: "us-central1",
+    cluster: cluster.name,
+    nodeCount: 1,
+    nodeConfig: {
+      machineType: "e2-standard-2",
+      oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
     },
   });
 
-  const clusterModule = new terraform.state.DataSource("gke", {
-    resource: gkeCluster,
-    module: "google-kubernetes-engine",
-    source: "terraform-google-modules/kubernetes-engine/google",
-    version: "28.0.0",
-    variables: {
-      project_id: projectId,
-      name: "gke-cluster",
-      region: "us-central1",
-      network: "default",
-      subnetwork: "default",
-      node_pools: [
-        {
-          name: "default-node-pool",
-          machine_type: "e2-standard-2",
-          min_count: 1,
-          max_count: 3,
-          disk_size_gb: 100,
-          disk_type: "pd-standard",
-          image_type: "COS_CONTAINERD",
-          auto_repair: true,
-          auto_upgrade: true,
-        },
-      ],
-    },
-  });
+  // Export the cluster details
+  const clusterInfo = pulumi
+    .all([cluster.name, cluster.endpoint, cluster.masterAuth])
+    .apply(([name, endpoint, auth]) => ({
+      name: name,
+      endpoint: endpoint,
+      clusterCaCertificate: auth.clusterCaCertificate,
+    }));
 
-  // Create k8s provider from GKE cluster
+  // Create a k8s provider using the GKE cluster
   k8sProvider = new k8s.Provider("gke-k8s", {
-    kubeconfig: clusterModule.getOutput("kubeconfig"),
+    kubeconfig: clusterInfo.apply((info) => {
+      return JSON.stringify({
+        apiVersion: "v1",
+        kind: "Config",
+        clusters: [
+          {
+            cluster: {
+              server: `https://${info.endpoint}`,
+              certificateAuthorityData: info.clusterCaCertificate,
+            },
+            name: "kubernetes",
+          },
+        ],
+        contexts: [
+          {
+            context: {
+              cluster: "kubernetes",
+              user: "kubernetes-admin",
+            },
+            name: "kubernetes-admin@kubernetes",
+          },
+        ],
+        currentContext: "kubernetes-admin@kubernetes",
+        users: [
+          {
+            name: "kubernetes-admin",
+            user: {
+              exec: {
+                apiVersion: "client.authentication.k8s.io/v1beta1",
+                command: "gke-gcloud-auth-plugin",
+                installHint: "Install gke-gcloud-auth-plugin",
+                provideClusterInfo: true,
+              },
+            },
+          },
+        ],
+      });
+    }),
   });
 }
 
