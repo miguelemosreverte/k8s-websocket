@@ -1,0 +1,6 @@
+Cluster Access Information
+=========================
+Kubectl Command: gcloud container clusters get-credentials my-gke-cluster --region us-central1 --project developer-test-02
+Kubeconfig Path: kubeconfig.yaml
+Ingress Controller IP: 35.239.177.203
+WebSocket Demo URL: http://35.239.177.203/

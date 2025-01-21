@@ -1,7 +1,7 @@
 credentials_file = "admin-key.gcloud.json"
 project_id       = "developer-test-02"
 region           = "us-central1"
-cluster_name     = "my-gke-cluster-pulumi"
+cluster_name     = "my-gke-cluster"
 machine_type     = "e2-medium"
 min_node_count   = 1
 max_node_count   = 3
