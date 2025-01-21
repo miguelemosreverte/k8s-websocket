@@ -1,5 +1,5 @@
-# pulumi-k8s-websocket
-Pulumi | Kubernetes | Websocket
+# k8s-websocket
+Kubernetes | Websocket
 
 ### HOW TO RUN LOCAL
 `minikube start --driver=docker`
