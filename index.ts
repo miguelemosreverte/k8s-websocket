@@ -1,156 +1,181 @@
 import * as pulumi from "@pulumi/pulumi";
-import * as docker from "@pulumi/docker";
-import * as k8s from "@pulumi/kubernetes";
 import * as gcp from "@pulumi/gcp";
+import * as k8s from "@pulumi/kubernetes";
+import * as helm from "@pulumi/kubernetes/helm";
 
-// Config
+// Configuration variables
 const config = new pulumi.Config();
-const environment = config.get("environment") || "minikube";
-const isMinikube = environment === "minikube";
-const projectId = "development-test-02";
+const projectId = config.require("projectId");
+const region = config.require("region");
+const clusterName = config.require("clusterName");
+const machineType = config.require("machineType");
+const diskSizeGb = config.requireNumber("diskSizeGb");
+const minNodeCount = config.requireNumber("minNodeCount");
+const maxNodeCount = config.requireNumber("maxNodeCount");
 
-let k8sProvider: k8s.Provider | undefined;
-let deployment: k8s.apps.v1.Deployment | undefined;
-let service: k8s.core.v1.Service | undefined;
-
-if (!isMinikube) {
-  // First create the GKE cluster
-  const cluster = new gcp.container.Cluster("chat-app-cluster", {
-    name: "chat-app-cluster",
-    location: "us-central1",
-    initialNodeCount: 2,
-    project: projectId,
-    removeDefaultNodePool: true,
-    deletionProtection: false, // Explicitly disable deletion protection
-    workloadIdentityConfig: {
-      workloadPool: `${projectId}.svc.id.goog`,
-    },
-  });
-
-  // Create a separately managed node pool
-  const nodePool = new gcp.container.NodePool("chat-app-nodes", {
-    name: "chat-app-nodes",
-    cluster: cluster.name,
-    location: "us-central1",
-    project: projectId,
-    nodeCount: 2,
-    nodeConfig: {
-      preemptible: false,
-      machineType: "n1-standard-1",
-      oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      workloadMetadataConfig: {
-        mode: "GKE_METADATA",
-      },
-    },
-  });
-
-  const kubeconfig = pulumi
-    .all([cluster.name, cluster.endpoint, cluster.masterAuth, cluster.location])
-    .apply(([name, endpoint, auth, location]) => {
-      return `apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    certificate-authority-data: ${auth.clusterCaCertificate}
-    server: https://${endpoint}
-  name: ${name}
-contexts:
-- context:
-    cluster: ${name}
-    user: ${name}
-  name: ${name}
-current-context: ${name}
-users:
-- name: ${name}
-  user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1beta1
-      command: gke-gcloud-auth-plugin
-      installHint: Install gke-gcloud-auth-plugin for use with kubectl by following https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
-      provideClusterInfo: true`;
-    });
-
-  // Create the k8s provider with the kubeconfig
-  k8sProvider = new k8s.Provider(
-    "chat-app-k8s",
-    {
-      kubeconfig: kubeconfig,
-    },
-    { dependsOn: [nodePool] },
-  );
-}
-
-// Registry setup for GCloud
-const registryServer = !isMinikube ? `gcr.io/${projectId}` : undefined;
-const registryUsername = !isMinikube ? "_json_key" : undefined;
-const registryPassword = !isMinikube
-  ? config.getSecret("registryPassword")
-  : undefined;
-
-// Image name setup
-const imageName = isMinikube ? "chat-app:v1" : `${registryServer}/chat-app:v1`;
-
-// Docker build
-const chatAppImage = new docker.Image("chat-app-image", {
-  build: {
-    context: ".",
-    platform: "linux/amd64",
-  },
-  imageName: imageName,
-  skipPush: isMinikube,
-  registry:
-    !isMinikube && registryServer
-      ? {
-          server: registryServer,
-          username: registryUsername,
-          password: registryPassword,
-        }
-      : undefined,
+// GCP Provider
+const gcpProvider = new gcp.Provider("gcp", {
+  credentials: config.requireSecret("credentialsFile"),
+  project: projectId,
+  region: region,
 });
 
-// Only proceed with k8s resources if we have a provider
-if (k8sProvider) {
-  // Application deployment
-  const appLabels = { app: "chat-app" };
-  deployment = new k8s.apps.v1.Deployment(
-    "chat-app-deployment",
-    {
-      metadata: { name: "chat-app" },
-      spec: {
-        replicas: 1,
-        selector: { matchLabels: appLabels },
-        template: {
-          metadata: { labels: appLabels },
-          spec: {
-            containers: [
+// GKE Cluster
+const cluster = new gcp.container.Cluster(
+  "primary",
+  {
+    name: clusterName,
+    location: region,
+    initialNodeCount: 1,
+    removeDefaultNodePool: true,
+    nodeConfig: {},
+    networkingMode: "VPC_NATIVE",
+  },
+  { provider: gcpProvider },
+);
+
+// Node Pool
+const nodePool = new gcp.container.NodePool(
+  "primary-nodes",
+  {
+    name: "default-node-pool",
+    cluster: cluster.name,
+    location: region,
+    nodeConfig: {
+      machineType: machineType,
+      diskSizeGb: diskSizeGb,
+      oauthScopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    },
+    autoscaling: {
+      minNodeCount: minNodeCount,
+      maxNodeCount: maxNodeCount,
+    },
+  },
+  { provider: gcpProvider },
+);
+
+// Get the kubeconfig for the cluster
+const kubeconfig = pulumi.secret(
+  cluster.name.apply(async (name) => {
+    const cluster = await gcp.container.getCluster({ name, location: region });
+    const context = `${gcpProvider.project}_${region}_${name}`;
+    return `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: ${cluster.masterAuths[0].clusterCaCertificate}
+    server: https://${cluster.endpoint}
+  name: ${context}
+contexts:
+- context:
+    cluster: ${context}
+    user: ${context}
+  name: ${context}
+current-context: ${context}
+kind: Config
+preferences: {}
+users:
+- name: ${context}
+  user:
+    auth-provider:
+      config:
+        cmd-args: config config-helper --format=json
+        cmd-path: gcloud
+        expiry-key: '{.credential.token_expiry}'
+        token-key: '{.credential.access_token}'
+      name: gcp
+`;
+  }),
+);
+
+// Kubernetes Provider
+const k8sProvider = new k8s.Provider("k8s", {
+  kubeconfig: kubeconfig,
+});
+
+// Helm Chart for NGINX Ingress
+const nginxIngress = new helm.v3.Chart(
+  "nginx-ingress",
+  {
+    chart: "ingress-nginx",
+    version: "4.7.1",
+    fetchOpts: {
+      repo: "https://kubernetes.github.io/ingress-nginx",
+    },
+    namespace: "ingress-nginx",
+  },
+  { provider: k8sProvider },
+);
+
+// WebSocket Demo Deployment
+const appLabels = { app: "websocket-demo" };
+const deployment = new k8s.apps.v1.Deployment(
+  "websocket-demo",
+  {
+    metadata: { labels: appLabels },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: appLabels },
+      template: {
+        metadata: { labels: appLabels },
+        spec: {
+          containers: [
+            {
+              name: "websocket-demo",
+              image: "nginx:1.27.3",
+              ports: [{ containerPort: 80 }],
+            },
+          ],
+        },
+      },
+    },
+  },
+  { provider: k8sProvider },
+);
+
+// Kubernetes Service
+const service = new k8s.core.v1.Service(
+  "websocket-demo-service",
+  {
+    metadata: { labels: appLabels },
+    spec: {
+      selector: appLabels,
+      ports: [{ port: 80, targetPort: 80 }],
+      type: "ClusterIP",
+    },
+  },
+  { provider: k8sProvider },
+);
+
+// Kubernetes Ingress
+const ingress = new k8s.networking.v1.Ingress(
+  "websocket-demo-ingress",
+  {
+    metadata: {
+      annotations: { "kubernetes.io/ingress.class": "nginx" },
+    },
+    spec: {
+      rules: [
+        {
+          http: {
+            paths: [
               {
-                name: "chat-app",
-                image: chatAppImage.imageName,
-                ports: [{ containerPort: 8080 }],
+                path: "/",
+                pathType: "Prefix",
+                backend: {
+                  service: {
+                    name: service.metadata.name,
+                    port: { number: 80 },
+                  },
+                },
               },
             ],
           },
         },
-      },
+      ],
     },
-    { provider: k8sProvider },
-  );
+  },
+  { provider: k8sProvider },
+);
 
-  // Service
-  service = new k8s.core.v1.Service(
-    "chat-app-service",
-    {
-      metadata: { name: "chat-app" },
-      spec: {
-        type: "LoadBalancer",
-        selector: appLabels,
-        ports: [{ port: 8080, targetPort: 8080 }],
-      },
-    },
-    { provider: k8sProvider },
-  );
-}
-
-// Exports
-export const deploymentName = deployment?.metadata.name;
-export const serviceName = service?.metadata.name;
+// Export the kubeconfig
+export const kubeconfigOutput = kubeconfig;

@@ -6,10 +6,11 @@
         "typescript": "^5.0.0"
     },
     "dependencies": {
-        "@pulumi/gcp": "^8.14.0",
         "@pulumi/docker": "^4.6.1",
+        "@pulumi/gcp": "^8.14.0",
         "@pulumi/kubernetes": "^4.21.0",
         "@pulumi/pulumi": "^3.146.0",
+        "@pulumi/terraform": "^5.13.4",
         "express": "^4.21.2",
         "serve-favicon": "^2.5.0",
         "ws": "^8.18.0"
